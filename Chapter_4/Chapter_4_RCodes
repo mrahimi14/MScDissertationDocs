@@ -1,1 +1,1603 @@
-########################Chapter_4_RCodes########################
+# Clearing the Environment:
+rm(list = ls())
+if(!is.null(dev.list())) dev.off()
+
+# Loading the required packages -------------------------------------------
+
+pkg <- c('tidyverse',
+         'caret',
+         'plsgenomics',
+         'sda',
+         'glmnet',
+         'pROC',
+         'xtable')
+
+for(i in 1:length(pkg)){
+  if(!(pkg[i] %in% installed.packages())) {
+    install.packages(pkg[i])
+  }
+  library(pkg[i], character.only = TRUE)
+}
+
+
+# Chapter-4 Codes --------------------------------------------------------
+
+
+# Required Functions: -----------------------------------------------------
+
+## Function_1: upper_tri_zero: ---------------------------------------------
+
+upper_tri_zero <- function(input){
+  # Checking if input is a data.frame:
+  if(!is.data.frame(input)){
+    stop("The input is not a data.frame!")
+  }
+  
+  # Selecting the numeric columns:
+  numeric_col = input[, sapply(input, is.numeric)]
+  
+  # Computing the correlation matrix:
+  corMat = cor(numeric_col)
+  
+  # Assigning zero to the diag:
+  diag(corMat) = 0
+  
+  # Make the upper triangle elements zero:
+  corMat[upper.tri(corMat)] = 0
+  
+  # Returning the result:
+  return(corMat)
+}
+
+
+# Function_2: train_test_split -------------------------------------------------------------
+
+train_test_split <- function(input, train_rate = 0.7, seed = 2000){
+  # Setting the seed for reproducibility:
+  set.seed(seed)
+  
+  # Initialize an empty list to store the results
+  results <- list()
+  
+  # Iterate over each data frame in the list
+  for (i in seq_along(dataList)) {
+    input <- dataList[[i]]
+    
+    # Check if the input is a data.frame:
+    if(!is.data.frame(input)){
+      stop("One of the inputs is not a data.frame!")
+    }
+    
+    # Shuffle the dataset:
+    input <- input[sample(nrow(input)), ]
+    
+    # Perform the train-test split
+    train_ind <- sample(1:nrow(input), train_rate * nrow(input))
+    train_set <- input[train_ind, ]
+    test_set <- input[-train_ind, ]
+    
+    # Store the results in the list
+    results[[i]] <- list(train_set = train_set, test_set = test_set)
+  }
+  
+  return(results)
+}
+
+
+# Loading the datasets: ---------------------------------------------------
+
+
+## Colon Dataset ---------------------------------------------------------
+
+# Loading the Colon Data set:
+data("Colon", package = 'plsgenomics')
+
+# Creating the data set as a data.frame:
+colonData <- data.frame(
+  y = Colon$Y,
+  x = Colon$X
+)
+
+# Renaming the Predictor Names:
+colnames(colonData)[2:length(colonData)] <- Colon$gene.names 
+
+# Removing the list-version colonData:
+rm(Colon)
+
+## Singh Dataset ---------------------------------------------------------
+
+# Loading the Colon Data set:
+data("singh2002", package = 'sda')
+
+# Creating the data set as a data.frame:
+singhData <- data.frame(
+  y = singh2002$y,
+  x = singh2002$x
+)
+
+# Removing the list-version singhData:
+rm(singh2002)
+
+## Gravier Dataset ---------------------------------------------------------
+
+load(paste0(getwd(), "/Chapter_4/gravier.RData"))
+gravierData <- data.frame(
+  y = gravier$y,
+  x = gravier$x
+)
+
+# Removing the list-version gravierData:
+rm(gravier)
+
+# Data Pre_processing ------------------------------------------------------
+
+
+## Checking for duplication ------------------------------------------------
+paste("There are", sum(duplicated(colonData)), "Duplications.")
+paste("There are", sum(duplicated(singhData)), "Duplications.")
+paste("There are", sum(duplicated(gravierData)), "Duplications.")
+
+## Checking for Missing_Values ------------------------------------------------
+paste("There are", sum(sapply(colonData, function(x) sum(is.na(x)))), "Missing Values.")
+paste("There are", sum(sapply(singhData, function(x) sum(is.na(x)))), "Missing Values.")
+paste("There are", sum(sapply(gravierData, function(x) sum(is.na(x)))), "Missing Values.")
+
+
+## Checking if there are columns with bivariate correlation exactly = 1 ------------------------------------------------
+paste("There are", length(which(upper_tri_zero(colonData) == 1)), "columns with correlation ONE.")
+paste("There are", length(which(upper_tri_zero(singhData) == 1)), "columns with correlation ONE.")
+paste("There are", length(which(upper_tri_zero(gravierData) == 1)), "columns with correlation ONE.")
+
+
+
+
+# Finding the equal-ONE correlation columns in colonData:
+dropList <- which(upper_tri_zero(colonData) == 1, arr.ind = T) %>% matrix(ncol = 2)
+
+# Row(Col)names of equal-ONE correlation columns in colonData:
+ro <- rownames(upper_tri_zero(colonData))[dropList[, 1]] %>% gsub(" ", "", .)
+co <- colnames(upper_tri_zero(colonData))[dropList[, 2]] %>% gsub(" ", "", .)
+matrix(c(ro, co), ncol = 2, byrow = T) 
+
+# colonData %>% 
+#   select(-c("HSAC07.1",
+#             "HSAC07.2",
+#             "HSAC07.3",
+#             "UMGAP.1",
+#             "UMGAP.2",
+#             "UMGAP.3",
+#             "i.1",
+#             "i.2",
+#             "i.3"
+#             )
+#          ) 
+
+
+
+
+# Descriptive Statistics --------------------------------------------------
+
+
+## Data Structure Table ----------------------------------------------------
+
+data_str_table <- data.frame(
+  No_Observations = c(dim(colonData)[1], 
+                       dim(singhData)[1],
+                       dim(gravierData)[1]),
+  No_Variables = c(dim(colonData)[2], 
+                   dim(singhData)[2],
+                   dim(gravierData)[2]),
+  No_Classes = c(2, 2, 2),
+  Disease = c("Colon Cancer",
+              "Prostate Cancer",
+              "Breast Cancer")
+) 
+print(data_str_table)
+
+
+# Data Modeling -----------------------------------------------------------
+
+
+
+# Train Test Split --------------------------------------------------------
+
+# The list of all dataset:
+# dataList = list(colonData, singhData, gravierData)
+dataList = list(colonData)
+                
+# Applying train_test_split funciton on dataList:
+results <- train_test_split(dataList)
+
+# colonData train_test_set:
+colonData_train <- results[[1]]$train_set
+colonData_test <- results[[1]]$test_set
+
+# singhData train_test_set:
+# singhData_train <- results[[2]]$train_set
+# singhData_test <- results[[2]]$test_set
+
+# gravierData train_test_set:
+# gravierData_train <- results[[3]]$train_set
+# gravierData_test <- results[[3]]$test_set
+
+
+## Fitting the models ------------------------------------------------------
+
+
+### Ridge -------------------------------------------------------------------
+
+#### colonData -------------------------------------------------------------------
+
+colon_fit_ridge <- cv.glmnet(x = as.matrix(colonData_train[, -1]),
+                             y = colonData_train$y,
+                             family = 'binomial',
+                             nfolds = 10,
+                             alpha = 0)
+
+colon_fit_ridge <- glmnet(x = as.matrix(colonData_train[, -1]),
+                          y = colonData_train$y,
+                          family = 'binomial',
+                          lambda = colon_fit_ridge$lambda.min,
+                          alpha = 0)
+
+# Get the coefficients from the ridge model
+colon_fit_ridge_coef <- coef(colon_fit_ridge)
+
+# Count the number of non-zero coefficients
+colon_fit_ridge_selected_vars <- sum(colon_fit_ridge_coef != 0)
+paste("The number of selected Variables:", colon_fit_ridge_selected_vars)
+
+
+# Making prediction: (On train_set)
+colon_fit_ridge_pred_train <- predict(colon_fit_ridge,
+                                      as.matrix(colonData_train[, -1]), 
+                                      type = "class") %>% factor
+# Making prediction: (On train_set)
+colon_fit_ridge_pred_train_prob <- predict(colon_fit_ridge,
+                                           as.matrix(colonData_train[, -1]), 
+                                           type = "response")
+
+# Making prediction: (On test_set)
+colon_fit_ridge_pred_test <- predict(colon_fit_ridge,
+                                     as.matrix(colonData_test[, -1]), 
+                                     type = "class") %>% factor
+# Making prediction: (On test_set)
+colon_fit_ridge_pred_test_prob <- predict(colon_fit_ridge,
+                                          as.matrix(colonData_test[, -1]), 
+                                          type = "response") 
+
+# Confusion Matrix: (On train_set)
+(colon_ridge_train_confmatrix <- confusionMatrix(factor(colonData_train[, 1]), colon_fit_ridge_pred_train))
+
+# Confusion Matrix: (On test_set)
+(colon_ridge_test_confmatrix <- confusionMatrix(factor(colonData_test[, 1]), colon_fit_ridge_pred_test))
+
+# ROC Curve: (On train_set)
+colon_ridge_ROC_train <- roc(colonData_train[, 1], colon_fit_ridge_pred_train_prob)
+plot.roc(colon_ridge_ROC_train, 
+         main = "ROC curve of ridge model - colonData (Train)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+# ROC Curve: (On test_set)
+colon_ridge_ROC_test <- roc(colonData_test[, 1], colon_fit_ridge_pred_test_prob)
+plot.roc(colon_ridge_ROC_test, 
+         main = "ROC curve of ridge model - colonData (Test)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b")
+
+
+#### singhData -------------------------------------------------------------------
+
+# singh_fit_ridge <- cv.glmnet(x = as.matrix(singhData_train[, -1]),
+#                              y = singhData_train$y,
+#                              family = 'binomial',
+#                              nfolds = 10,
+#                              alpha = 0)
+# 
+# singh_fit_ridge <- glmnet(x = as.matrix(singhData_train[, -1]),
+#                           y = singhData_train$y,
+#                           family = 'binomial',
+#                           lambda = singh_fit_ridge$lambda.min,
+#                           alpha = 0)
+# 
+# # Get the coefficients from the ridge model
+# singh_fit_ridge_coef <- coef(singh_fit_ridge)
+# 
+# # Count the number of non-zero coefficients
+# singh_fit_ridge_selected_vars <- sum(singh_fit_ridge_coef != 0)
+# paste("The number of selected Variables:", singh_fit_ridge_selected_vars)
+# 
+# 
+# 
+# # Making prediction: (On train_set)
+# singh_fit_ridge_pred_train <- predict(singh_fit_ridge,
+#                                       as.matrix(singhData_train[, -1]), 
+#                                       type = "class") %>% factor
+# # Making prediction: (On train_set)
+# singh_fit_ridge_pred_train_prob <- predict(singh_fit_ridge,
+#                                            as.matrix(singhData_train[, -1]), 
+#                                            type = "response")
+# 
+# # Making prediction: (On test_set)
+# singh_fit_ridge_pred_test <- predict(singh_fit_ridge,
+#                                      as.matrix(singhData_test[, -1]), 
+#                                      type = "class") %>% factor
+# # Making prediction: (On test_set)
+# singh_fit_ridge_pred_test_prob <- predict(singh_fit_ridge,
+#                                           as.matrix(singhData_test[, -1]), 
+#                                           type = "response") 
+# 
+# # Confusion Matrix: (On train_set)
+# (singh_ridge_train_confmatrix <- confusionMatrix(factor(singhData_train[, 1]), singh_fit_ridge_pred_train))
+# 
+# # Confusion Matrix: (On test_set)
+# (singh_ridge_test_confmatrix <- confusionMatrix(factor(singhData_test[, 1]), singh_fit_ridge_pred_test))
+# 
+# # ROC Curve: (On train_set)
+# singh_ridge_ROC_train <- roc(singhData_train[, 1], singh_fit_ridge_pred_train_prob)
+# plot.roc(singh_ridge_ROC_train, 
+#          main = "ROC curve of ridge model - singhData (Train)",
+#          xlab = "False Positive Rate (FPR)",
+#          ylab = "True Positive Rate (TPR)",
+#          print.auc = TRUE,
+#          auc.polygon = TRUE,
+#          print.auc.col = "#1c61b6",
+#          auc.polygon.col = "lightgreen",
+#          legacy.axes = TRUE)
+# # ROC Curve: (On test_set)
+# singh_ridge_ROC_test <- roc(singhData_test[, 1], singh_fit_ridge_pred_test_prob)
+# plot.roc(singh_ridge_ROC_test, 
+#          main = "ROC curve of ridge model - singhData (Test)",
+#          xlab = "False Positive Rate (FPR)",
+#          ylab = "True Positive Rate (TPR)",
+#          print.auc = TRUE,
+#          auc.polygon = TRUE,
+#          print.auc.col = "#1c61b6",
+#          auc.polygon.col = "lightgreen",
+#          legacy.axes = TRUE)
+
+
+#### gravierData -------------------------------------------------------------------
+
+# gravier_fit_ridge <- cv.glmnet(x = as.matrix(gravierData_train[, -1]),
+#                                y = gravierData_train$y,
+#                                family = 'binomial',
+#                                nfolds = 10,
+#                                alpha = 0)
+# 
+# gravier_fit_ridge <- glmnet(x = as.matrix(gravierData_train[, -1]),
+#                             y = gravierData_train$y,
+#                             family = 'binomial',
+#                             lambda = gravier_fit_ridge$lambda.min,
+#                             alpha = 0)
+# 
+# # Get the coefficients from the ridge model
+# gravier_fit_ridge_coef <- coef(gravier_fit_ridge)
+# 
+# # Count the number of non-zero coefficients
+# gravier_fit_ridge_selected_vars <- sum(gravier_fit_ridge_coef != 0)
+# paste("The number of selected Variables:", gravier_fit_ridge_selected_vars)
+# 
+# # Making prediction: (On train_set)
+# gravier_fit_ridge_pred_train <- predict(gravier_fit_ridge,
+#                                         as.matrix(gravierData_train[, -1]), 
+#                                         type = "class") %>% factor
+# # Making prediction: (On train_set)
+# gravier_fit_ridge_pred_train_prob <- predict(gravier_fit_ridge,
+#                                              as.matrix(gravierData_train[, -1]), 
+#                                              type = "response")
+# 
+# # Making prediction: (On test_set)
+# gravier_fit_ridge_pred_test <- predict(gravier_fit_ridge,
+#                                        as.matrix(gravierData_test[, -1]), 
+#                                        type = "class") %>% factor
+# # Making prediction: (On test_set)
+# gravier_fit_ridge_pred_test_prob <- predict(gravier_fit_ridge,
+#                                             as.matrix(gravierData_test[, -1]), 
+#                                             type = "response") 
+# 
+# # Confusion Matrix: (On train_set)
+# (gravier_ridge_train_confmatrix <- confusionMatrix(factor(gravierData_train[, 1]), gravier_fit_ridge_pred_train))
+# 
+# # Confusion Matrix: (On test_set)
+# (gravier_ridge_test_confmatrix <- confusionMatrix(factor(gravierData_test[, 1]), gravier_fit_ridge_pred_test))
+# 
+# # ROC Curve: (On train_set)
+# gravier_ridge_ROC_train <- roc(gravierData_train[, 1], gravier_fit_ridge_pred_train_prob)
+# plot.roc(gravier_ridge_ROC_train, 
+#          main = "ROC curve of ridge model - gravierData (Train)",
+#          xlab = "False Positive Rate (FPR)",
+#          ylab = "True Positive Rate (TPR)",
+#          print.auc = TRUE,
+#          auc.polygon = TRUE,
+#          print.auc.col = "#1c61b6",
+#          auc.polygon.col = "lightgreen",
+#          legacy.axes = TRUE)
+# 
+# # ROC Curve: (On test_set)
+# gravier_ridge_ROC_test <- roc(gravierData_test[, 1], gravier_fit_ridge_pred_test_prob)
+# plot.roc(gravier_ridge_ROC_test, 
+#          main = "ROC curve of ridge model - gravierData (Test)",
+#          xlab = "False Positive Rate (FPR)",
+#          ylab = "True Positive Rate (TPR)",
+#          print.auc = TRUE,
+#          auc.polygon = TRUE,
+#          print.auc.col = "#1c61b6",
+#          auc.polygon.col = "lightgreen",
+#          legacy.axes = TRUE)
+
+### LASSO -------------------------------------------------------------------
+
+#### colonData -------------------------------------------------------------------
+
+colon_fit_lasso <- cv.glmnet(x = as.matrix(colonData_train[, -1]),
+                       y = colonData_train$y,
+                       family = 'binomial',
+                       nfolds = 10,
+                       alpha = 1)
+
+colon_fit_lasso <- glmnet(x = as.matrix(colonData_train[, -1]),
+                    y = colonData_train$y,
+                    family = 'binomial',
+                    lambda = colon_fit_lasso$lambda.min,
+                    alpha = 1)
+
+# Get the coefficients from the lasso model
+colon_fit_lasso_coef <- coef(colon_fit_lasso)
+
+# Count the number of non-zero coefficients
+colon_fit_lasso_selected_vars <- sum(colon_fit_lasso_coef != 0)
+paste("The number of selected Variables:", colon_fit_lasso_selected_vars)
+
+
+# Making prediction: (On train_set)
+colon_fit_lasso_pred_train <- predict(colon_fit_lasso,
+                                      as.matrix(colonData_train[, -1]), 
+                                      type = "class") %>% factor
+# Making prediction: (On train_set)
+colon_fit_lasso_pred_train_prob <- predict(colon_fit_lasso,
+                                      as.matrix(colonData_train[, -1]), 
+                                      type = "response")
+
+# Making prediction: (On test_set)
+colon_fit_lasso_pred_test <- predict(colon_fit_lasso,
+                                      as.matrix(colonData_test[, -1]), 
+                                      type = "class") %>% factor
+# Making prediction: (On test_set)
+colon_fit_lasso_pred_test_prob <- predict(colon_fit_lasso,
+                                     as.matrix(colonData_test[, -1]), 
+                                     type = "response") 
+
+# Confusion Matrix: (On train_set)
+(colon_lasso_train_confmatrix <- confusionMatrix(factor(colonData_train[, 1]), colon_fit_lasso_pred_train))
+
+# Confusion Matrix: (On test_set)
+(colon_lasso_test_confmatrix <- confusionMatrix(factor(colonData_test[, 1]), colon_fit_lasso_pred_test))
+
+# ROC Curve: (On train_set)
+colon_lasso_ROC_train <- roc(colonData_train[, 1], colon_fit_lasso_pred_train_prob)
+plot.roc(colon_lasso_ROC_train, 
+         main = "ROC curve of LASSO model - colonData (Train)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+# ROC Curve: (On test_set)
+colon_lasso_ROC_test <- roc(colonData_test[, 1], colon_fit_lasso_pred_test_prob)
+plot.roc(colon_lasso_ROC_test, 
+         main = "ROC curve of LASSO model - colonData (Test)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+
+#### singhData -------------------------------------------------------------------
+
+# singh_fit_lasso <- cv.glmnet(x = as.matrix(singhData_train[, -1]),
+#                              y = singhData_train$y,
+#                              family = 'binomial',
+#                              nfolds = 10,
+#                              alpha = 1)
+# 
+# singh_fit_lasso <- glmnet(x = as.matrix(singhData_train[, -1]),
+#                           y = singhData_train$y,
+#                           family = 'binomial',
+#                           lambda = singh_fit_lasso$lambda.min,
+#                           alpha = 1)
+# 
+# # Get the coefficients from the lasso model
+# singh_fit_lasso_coef <- coef(singh_fit_lasso)
+# 
+# # Count the number of non-zero coefficients
+# singh_fit_lasso_selected_vars <- sum(singh_fit_lasso_coef != 0)
+# paste("The number of selected Variables:", singh_fit_lasso_selected_vars)
+# 
+# 
+# 
+# # Making prediction: (On train_set)
+# singh_fit_lasso_pred_train <- predict(singh_fit_lasso,
+#                                       as.matrix(singhData_train[, -1]), 
+#                                       type = "class") %>% factor
+# # Making prediction: (On train_set)
+# singh_fit_lasso_pred_train_prob <- predict(singh_fit_lasso,
+#                                            as.matrix(singhData_train[, -1]), 
+#                                            type = "response")
+# 
+# # Making prediction: (On test_set)
+# singh_fit_lasso_pred_test <- predict(singh_fit_lasso,
+#                                      as.matrix(singhData_test[, -1]), 
+#                                      type = "class") %>% factor
+# # Making prediction: (On test_set)
+# singh_fit_lasso_pred_test_prob <- predict(singh_fit_lasso,
+#                                           as.matrix(singhData_test[, -1]), 
+#                                           type = "response") 
+# 
+# # Confusion Matrix: (On train_set)
+# (singh_lasso_train_confmatrix <- confusionMatrix(factor(singhData_train[, 1]), singh_fit_lasso_pred_train))
+# 
+# # Confusion Matrix: (On test_set)
+# (singh_lasso_test_confmatrix <- confusionMatrix(factor(singhData_test[, 1]), singh_fit_lasso_pred_test))
+# 
+# # ROC Curve: (On train_set)
+# singh_lasso_ROC_train <- roc(singhData_train[, 1], singh_fit_lasso_pred_train_prob)
+# plot.roc(singh_lasso_ROC_train, 
+#          main = "ROC curve of LASSO model - singhData (Train)",
+#          xlab = "False Positive Rate (FPR)",
+#          ylab = "True Positive Rate (TPR)",
+#          print.auc = TRUE,
+#          auc.polygon = TRUE,
+#          print.auc.col = "#1c61b6",
+#          auc.polygon.col = "lightgreen",
+#          legacy.axes = TRUE)
+# # ROC Curve: (On test_set)
+# singh_lasso_ROC_test <- roc(singhData_test[, 1], singh_fit_lasso_pred_test_prob)
+# plot.roc(singh_lasso_ROC_test, 
+#          main = "ROC curve of LASSO model - singhData (Test)",
+#          xlab = "False Positive Rate (FPR)",
+#          ylab = "True Positive Rate (TPR)",
+#          print.auc = TRUE,
+#          auc.polygon = TRUE,
+#          print.auc.col = "#1c61b6",
+#          auc.polygon.col = "lightgreen",
+#          legacy.axes = TRUE)
+
+
+#### gravierData -------------------------------------------------------------------
+
+gravier_fit_lasso <- cv.glmnet(x = as.matrix(gravierData_train[, -1]),
+                             y = gravierData_train$y,
+                             family = 'binomial',
+                             nfolds = 10,
+                             alpha = 1)
+
+gravier_fit_lasso <- glmnet(x = as.matrix(gravierData_train[, -1]),
+                          y = gravierData_train$y,
+                          family = 'binomial',
+                          lambda = gravier_fit_lasso$lambda.min,
+                          alpha = 1)
+
+# Get the coefficients from the lasso model
+gravier_fit_lasso_coef <- coef(gravier_fit_lasso)
+
+# Count the number of non-zero coefficients
+gravier_fit_lasso_selected_vars <- sum(gravier_fit_lasso_coef != 0)
+paste("The number of selected Variables:", gravier_fit_lasso_selected_vars)
+
+# Making prediction: (On train_set)
+gravier_fit_lasso_pred_train <- predict(gravier_fit_lasso,
+                                      as.matrix(gravierData_train[, -1]), 
+                                      type = "class") %>% factor
+# Making prediction: (On train_set)
+gravier_fit_lasso_pred_train_prob <- predict(gravier_fit_lasso,
+                                           as.matrix(gravierData_train[, -1]), 
+                                           type = "response")
+
+# Making prediction: (On test_set)
+gravier_fit_lasso_pred_test <- predict(gravier_fit_lasso,
+                                     as.matrix(gravierData_test[, -1]), 
+                                     type = "class") %>% factor
+# Making prediction: (On test_set)
+gravier_fit_lasso_pred_test_prob <- predict(gravier_fit_lasso,
+                                          as.matrix(gravierData_test[, -1]), 
+                                          type = "response") 
+
+# Confusion Matrix: (On train_set)
+(gravier_lasso_train_confmatrix <- confusionMatrix(factor(gravierData_train[, 1]), gravier_fit_lasso_pred_train))
+
+# Confusion Matrix: (On test_set)
+(gravier_lasso_test_confmatrix <- confusionMatrix(factor(gravierData_test[, 1]), gravier_fit_lasso_pred_test))
+
+# ROC Curve: (On train_set)
+gravier_lasso_ROC_train <- roc(gravierData_train[, 1], gravier_fit_lasso_pred_train_prob)
+plot.roc(gravier_lasso_ROC_train, 
+         main = "ROC curve of LASSO model - gravierData (Train)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+
+# ROC Curve: (On test_set)
+gravier_lasso_ROC_test <- roc(gravierData_test[, 1], gravier_fit_lasso_pred_test_prob)
+plot.roc(gravier_lasso_ROC_test, 
+         main = "ROC curve of LASSO model - gravierData (Test)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+
+
+### Addaptive LASSO -------------------------------------------------------------------
+
+#### colonData -------------------------------------------------------------------
+
+colon_fit_Alasso <- cv.glmnet(x = as.matrix(colonData_train[, -1]),
+                             y = colonData_train$y,
+                             family = 'binomial',
+                             nfolds = 10,
+                             alpha = 1,
+                             penalty.factor = 1/abs((colon_fit_lasso_coef[-1])))
+
+colon_fit_Alasso <- glmnet(x = as.matrix(colonData_train[, -1]),
+                          y = colonData_train$y,
+                          family = 'binomial',
+                          lambda = colon_fit_Alasso$lambda.min,
+                          alpha = 1,
+                          penalty.factor = 1/abs((colon_fit_lasso_coef[-1])))
+
+# Get the coefficients from the Alasso model
+colon_fit_Alasso_coef <- coef(colon_fit_Alasso)
+
+# Count the number of non-zero coefficients
+colon_fit_Alasso_selected_vars <- sum(colon_fit_Alasso_coef != 0)
+paste("The number of selected Variables:", colon_fit_Alasso_selected_vars)
+
+
+# Making prediction: (On train_set)
+colon_fit_Alasso_pred_train <- predict(colon_fit_Alasso,
+                                      as.matrix(colonData_train[, -1]), 
+                                      type = "class") %>% factor
+# Making prediction: (On train_set)
+colon_fit_Alasso_pred_train_prob <- predict(colon_fit_Alasso,
+                                           as.matrix(colonData_train[, -1]), 
+                                           type = "response")
+
+# Making prediction: (On test_set)
+colon_fit_Alasso_pred_test <- predict(colon_fit_Alasso,
+                                     as.matrix(colonData_test[, -1]), 
+                                     type = "class") %>% factor
+# Making prediction: (On test_set)
+colon_fit_Alasso_pred_test_prob <- predict(colon_fit_Alasso,
+                                          as.matrix(colonData_test[, -1]), 
+                                          type = "response") 
+
+# Confusion Matrix: (On train_set)
+(colon_Alasso_train_confmatrix <- confusionMatrix(factor(colonData_train[, 1]), colon_fit_Alasso_pred_train))
+
+# Confusion Matrix: (On test_set)
+(colon_Alasso_test_confmatrix <- confusionMatrix(factor(colonData_test[, 1]), colon_fit_Alasso_pred_test))
+
+# ROC Curve: (On train_set)
+colon_Alasso_ROC_train <- roc(colonData_train[, 1], colon_fit_Alasso_pred_train_prob)
+plot.roc(colon_Alasso_ROC_train, 
+         main = "ROC curve of Alasso model - colonData (Train)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+# ROC Curve: (On test_set)
+colon_Alasso_ROC_test <- roc(colonData_test[, 1], colon_fit_Alasso_pred_test_prob)
+plot.roc(colon_Alasso_ROC_test, 
+         main = "ROC curve of Alasso model - colonData (Test)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+
+#### singhData -------------------------------------------------------------------
+
+# singh_fit_Alasso <- cv.glmnet(x = as.matrix(singhData_train[, -1]),
+#                              y = singhData_train$y,
+#                              family = 'binomial',
+#                              nfolds = 10,
+#                              alpha = 1,
+#                              penalty.factor = 1/(singh_fit_lasso_coef[-1]))
+# 
+# singh_fit_Alasso <- glmnet(x = as.matrix(singhData_train[, -1]),
+#                           y = singhData_train$y,
+#                           family = 'binomial',
+#                           lambda = singh_fit_Alasso$lambda.min,
+#                           alpha = 1,
+#                           penalty.factor = 1/(singh_fit_lasso_coef[-1]))
+# 
+# # Get the coefficients from the Alasso model
+# singh_fit_Alasso_coef <- coef(singh_fit_Alasso)
+# 
+# # Count the number of non-zero coefficients
+# singh_fit_Alasso_selected_vars <- sum(singh_fit_Alasso_coef != 0)
+# paste("The number of selected Variables:", singh_fit_Alasso_selected_vars)
+# 
+# 
+# 
+# # Making prediction: (On train_set)
+# singh_fit_Alasso_pred_train <- predict(singh_fit_Alasso,
+#                                       as.matrix(singhData_train[, -1]), 
+#                                       type = "class") %>% factor
+# # Making prediction: (On train_set)
+# singh_fit_Alasso_pred_train_prob <- predict(singh_fit_Alasso,
+#                                            as.matrix(singhData_train[, -1]), 
+#                                            type = "response")
+# 
+# # Making prediction: (On test_set)
+# singh_fit_Alasso_pred_test <- predict(singh_fit_Alasso,
+#                                      as.matrix(singhData_test[, -1]), 
+#                                      type = "class") %>% factor
+# # Making prediction: (On test_set)
+# singh_fit_Alasso_pred_test_prob <- predict(singh_fit_Alasso,
+#                                           as.matrix(singhData_test[, -1]), 
+#                                           type = "response") 
+# 
+# # Confusion Matrix: (On train_set)
+# (singh_Alasso_train_confmatrix <- confusionMatrix(factor(singhData_train[, 1]), singh_fit_Alasso_pred_train))
+# 
+# # Confusion Matrix: (On test_set)
+# (singh_Alasso_test_confmatrix <- confusionMatrix(factor(singhData_test[, 1]), singh_fit_Alasso_pred_test))
+# 
+# # ROC Curve: (On train_set)
+# singh_Alasso_ROC_train <- roc(singhData_train[, 1], singh_fit_Alasso_pred_train_prob)
+# plot.roc(singh_Alasso_ROC_train, 
+#          main = "ROC curve of Alasso model - singhData (Train)",
+#          xlab = "False Positive Rate (FPR)",
+#          ylab = "True Positive Rate (TPR)",
+#          print.auc = TRUE,
+#          auc.polygon = TRUE,
+#          print.auc.col = "#1c61b6",
+#          auc.polygon.col = "lightgreen",
+#          legacy.axes = TRUE)
+# # ROC Curve: (On test_set)
+# singh_Alasso_ROC_test <- roc(singhData_test[, 1], singh_fit_Alasso_pred_test_prob)
+# plot.roc(singh_Alasso_ROC_test, 
+#          main = "ROC curve of Alasso model - singhData (Test)",
+#          xlab = "False Positive Rate (FPR)",
+#          ylab = "True Positive Rate (TPR)",
+#          print.auc = TRUE,
+#          auc.polygon = TRUE,
+#          print.auc.col = "#1c61b6",
+#          auc.polygon.col = "lightgreen",
+#          legacy.axes = TRUE)
+
+
+#### gravierData -------------------------------------------------------------------
+
+# gravier_fit_Alasso <- cv.glmnet(x = as.matrix(gravierData_train[, -1]),
+#                                y = gravierData_train$y,
+#                                family = 'binomial',
+#                                nfolds = 10,
+#                                alpha = 1,
+#                                penalty.factor = 1/(gravier_fit_lasso_coef[-1]))
+# 
+# gravier_fit_Alasso <- glmnet(x = as.matrix(gravierData_train[, -1]),
+#                             y = gravierData_train$y,
+#                             family = 'binomial',
+#                             lambda = gravier_fit_Alasso$lambda.min,
+#                             alpha = 1,
+#                             penalty.factor = 1/(gravier_fit_lasso_coef[-1]))
+# 
+# # Get the coefficients from the Alasso model
+# gravier_fit_Alasso_coef <- coef(gravier_fit_Alasso)
+# 
+# # Count the number of non-zero coefficients
+# gravier_fit_Alasso_selected_vars <- sum(gravier_fit_Alasso_coef != 0)
+# paste("The number of selected Variables:", gravier_fit_Alasso_selected_vars)
+# 
+# # Making prediction: (On train_set)
+# gravier_fit_Alasso_pred_train <- predict(gravier_fit_Alasso,
+#                                         as.matrix(gravierData_train[, -1]), 
+#                                         type = "class") %>% factor
+# # Making prediction: (On train_set)
+# gravier_fit_Alasso_pred_train_prob <- predict(gravier_fit_Alasso,
+#                                              as.matrix(gravierData_train[, -1]), 
+#                                              type = "response")
+# 
+# # Making prediction: (On test_set)
+# gravier_fit_Alasso_pred_test <- predict(gravier_fit_Alasso,
+#                                        as.matrix(gravierData_test[, -1]), 
+#                                        type = "class") %>% factor
+# # Making prediction: (On test_set)
+# gravier_fit_Alasso_pred_test_prob <- predict(gravier_fit_Alasso,
+#                                             as.matrix(gravierData_test[, -1]), 
+#                                             type = "response") 
+# 
+# # Confusion Matrix: (On train_set)
+# (gravier_Alasso_train_confmatrix <- confusionMatrix(factor(gravierData_train[, 1]), gravier_fit_Alasso_pred_train))
+# 
+# # Confusion Matrix: (On test_set)
+# (gravier_Alasso_test_confmatrix <- confusionMatrix(factor(gravierData_test[, 1]), gravier_fit_Alasso_pred_test))
+# 
+# # ROC Curve: (On train_set)
+# gravier_Alasso_ROC_train <- roc(gravierData_train[, 1], gravier_fit_Alasso_pred_train_prob)
+# plot.roc(gravier_Alasso_ROC_train, 
+#          main = "ROC curve of Alasso model - gravierData (Train)",
+#          xlab = "False Positive Rate (FPR)",
+#          ylab = "True Positive Rate (TPR)",
+#          print.auc = TRUE,
+#          auc.polygon = TRUE,
+#          print.auc.col = "#1c61b6",
+#          auc.polygon.col = "lightgreen",
+#          legacy.axes = TRUE)
+# 
+# # ROC Curve: (On test_set)
+# gravier_Alasso_ROC_test <- roc(gravierData_test[, 1], gravier_fit_Alasso_pred_test_prob)
+# plot.roc(gravier_Alasso_ROC_test, 
+#          main = "ROC curve of Alasso model - gravierData (Test)",
+#          xlab = "False Positive Rate (FPR)",
+#          ylab = "True Positive Rate (TPR)",
+#          print.auc = TRUE,
+#          auc.polygon = TRUE,
+#          print.auc.col = "#1c61b6",
+#          auc.polygon.col = "lightgreen",
+#          legacy.axes = TRUE)
+
+
+### CBPLR -------------------------------------------------------------------
+
+#### colonData -------------------------------------------------------------------
+
+# Importing the CB coefficients:
+colon_fit_CB_coef <- read.csv("D:/Github/MScDissertationDocs/MScDissertationDocs/Data/Colon/colonTrain_CBcoef01.csv")[, 2]
+colon_fit_CB <- cv.glmnet(x = as.matrix(colonData_train[, -1]),
+                          y = colonData_train$y,
+                          family = 'binomial',
+                          nfolds = 10,
+                          alpha = 1,
+                          penalty.factor = 1/abs((colon_fit_CB_coef[-1])))
+
+colon_fit_CB <- glmnet(x = as.matrix(colonData_train[, -1]),
+                       y = colonData_train$y,
+                       family = 'binomial',
+                       lambda = colon_fit_CB$lambda.min,
+                       alpha = 1,
+                       penalty.factor = 1/abs((colon_fit_CB_coef[-1])))
+
+# Get the coefficients from the CB model
+colon_fit_CB_coef <- coef(colon_fit_CB)
+
+# Count the number of non-zero coefficients
+colon_fit_CB_selected_vars <- sum(colon_fit_CB_coef != 0)
+paste("The number of selected Variables:", colon_fit_CB_selected_vars)
+
+
+# Making prediction: (On train_set)
+colon_fit_CB_pred_train <- predict(colon_fit_CB,
+                                   as.matrix(colonData_train[, -1]), 
+                                   type = "class") %>% factor
+# Making prediction: (On train_set)
+colon_fit_CB_pred_train_prob <- predict(colon_fit_CB,
+                                        as.matrix(colonData_train[, -1]), 
+                                        type = "response")
+
+# Making prediction: (On test_set)
+colon_fit_CB_pred_test <- predict(colon_fit_CB,
+                                  as.matrix(colonData_test[, -1]), 
+                                  type = "class") %>% factor
+# Making prediction: (On test_set)
+colon_fit_CB_pred_test_prob <- predict(colon_fit_CB,
+                                       as.matrix(colonData_test[, -1]), 
+                                       type = "response") 
+
+# Confusion Matrix: (On train_set)
+(colon_CB_train_confmatrix <- confusionMatrix(factor(colonData_train[, 1]), colon_fit_CB_pred_train))
+
+# Confusion Matrix: (On test_set)
+(colon_CB_test_confmatrix <- confusionMatrix(factor(colonData_test[, 1]), colon_fit_CB_pred_test))
+
+# ROC Curve: (On train_set)
+colon_CB_ROC_train <- roc(colonData_train[, 1], colon_fit_CB_pred_train_prob)
+plot.roc(colon_CB_ROC_train, 
+         main = "ROC curve of CB model - colonData (Train)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+# ROC Curve: (On test_set)
+colon_CB_ROC_test <- roc(colonData_test[, 1], colon_fit_CB_pred_test_prob)
+plot.roc(colon_CB_ROC_test, 
+         main = "ROC curve of CB model - colonData (Test)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+
+
+
+### ElasticNet -------------------------------------------------------------------
+
+#### colonData -------------------------------------------------------------------
+
+colon_fit_ElasticNet <- cv.glmnet(x = as.matrix(colonData_train[, -1]),
+                             y = colonData_train$y,
+                             family = 'binomial',
+                             nfolds = 10,
+                             alpha = 0.5)
+
+colon_fit_ElasticNet <- glmnet(x = as.matrix(colonData_train[, -1]),
+                          y = colonData_train$y,
+                          family = 'binomial',
+                          lambda = colon_fit_ElasticNet$lambda.min,
+                          alpha = 0.5)
+
+# Get the coefficients from the ElasticNet model
+colon_fit_ElasticNet_coef <- coef(colon_fit_ElasticNet)
+
+# Count the number of non-zero coefficients
+colon_fit_ElasticNet_selected_vars <- sum(colon_fit_ElasticNet_coef != 0)
+paste("The number of selected Variables:", colon_fit_ElasticNet_selected_vars)
+
+
+# Making prediction: (On train_set)
+colon_fit_ElasticNet_pred_train <- predict(colon_fit_ElasticNet,
+                                      as.matrix(colonData_train[, -1]), 
+                                      type = "class") %>% factor
+# Making prediction: (On train_set)
+colon_fit_ElasticNet_pred_train_prob <- predict(colon_fit_ElasticNet,
+                                           as.matrix(colonData_train[, -1]), 
+                                           type = "response")
+
+# Making prediction: (On test_set)
+colon_fit_ElasticNet_pred_test <- predict(colon_fit_ElasticNet,
+                                     as.matrix(colonData_test[, -1]), 
+                                     type = "class") %>% factor
+# Making prediction: (On test_set)
+colon_fit_ElasticNet_pred_test_prob <- predict(colon_fit_ElasticNet,
+                                          as.matrix(colonData_test[, -1]), 
+                                          type = "response") 
+
+# Confusion Matrix: (On train_set)
+(colon_ElasticNet_train_confmatrix <- confusionMatrix(factor(colonData_train[, 1]), colon_fit_ElasticNet_pred_train))
+
+# Confusion Matrix: (On test_set)
+(colon_ElasticNet_test_confmatrix <- confusionMatrix(factor(colonData_test[, 1]), colon_fit_ElasticNet_pred_test))
+
+# ROC Curve: (On train_set)
+colon_ElasticNet_ROC_train <- roc(colonData_train[, 1], colon_fit_ElasticNet_pred_train_prob)
+plot.roc(colon_ElasticNet_ROC_train, 
+         main = "ROC curve of ElasticNet model - colonData (Train)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+# ROC Curve: (On test_set)
+colon_ElasticNet_ROC_test <- roc(colonData_test[, 1], colon_fit_ElasticNet_pred_test_prob)
+plot.roc(colon_ElasticNet_ROC_test, 
+         main = "ROC curve of ElasticNet model - colonData (Test)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+
+#### singhData -------------------------------------------------------------------
+
+singh_fit_ElasticNet <- cv.glmnet(x = as.matrix(singhData_train[, -1]),
+                             y = singhData_train$y,
+                             family = 'binomial',
+                             nfolds = 10,
+                             alpha = 0.5)
+
+singh_fit_ElasticNet <- glmnet(x = as.matrix(singhData_train[, -1]),
+                          y = singhData_train$y,
+                          family = 'binomial',
+                          lambda = singh_fit_ElasticNet$lambda.min,
+                          alpha = 0.5)
+
+# Get the coefficients from the ElasticNet model
+singh_fit_ElasticNet_coef <- coef(singh_fit_ElasticNet)
+
+# Count the number of non-zero coefficients
+singh_fit_ElasticNet_selected_vars <- sum(singh_fit_ElasticNet_coef != 0)
+paste("The number of selected Variables:", singh_fit_ElasticNet_selected_vars)
+
+
+
+# Making prediction: (On train_set)
+singh_fit_ElasticNet_pred_train <- predict(singh_fit_ElasticNet,
+                                      as.matrix(singhData_train[, -1]), 
+                                      type = "class") %>% factor
+# Making prediction: (On train_set)
+singh_fit_ElasticNet_pred_train_prob <- predict(singh_fit_ElasticNet,
+                                           as.matrix(singhData_train[, -1]), 
+                                           type = "response")
+
+# Making prediction: (On test_set)
+singh_fit_ElasticNet_pred_test <- predict(singh_fit_ElasticNet,
+                                     as.matrix(singhData_test[, -1]), 
+                                     type = "class") %>% factor
+# Making prediction: (On test_set)
+singh_fit_ElasticNet_pred_test_prob <- predict(singh_fit_ElasticNet,
+                                          as.matrix(singhData_test[, -1]), 
+                                          type = "response") 
+
+# Confusion Matrix: (On train_set)
+(singh_ElasticNet_train_confmatrix <- confusionMatrix(factor(singhData_train[, 1]), singh_fit_ElasticNet_pred_train))
+
+# Confusion Matrix: (On test_set)
+(singh_ElasticNet_test_confmatrix <- confusionMatrix(factor(singhData_test[, 1]), singh_fit_ElasticNet_pred_test))
+
+# ROC Curve: (On train_set)
+singh_ElasticNet_ROC_train <- roc(singhData_train[, 1], singh_fit_ElasticNet_pred_train_prob)
+plot.roc(singh_ElasticNet_ROC_train, 
+         main = "ROC curve of ElasticNet model - singhData (Train)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+# ROC Curve: (On test_set)
+singh_ElasticNet_ROC_test <- roc(singhData_test[, 1], singh_fit_ElasticNet_pred_test_prob)
+plot.roc(singh_ElasticNet_ROC_test, 
+         main = "ROC curve of ElasticNet model - singhData (Test)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+
+
+#### gravierData -------------------------------------------------------------------
+
+gravier_fit_ElasticNet <- cv.glmnet(x = as.matrix(gravierData_train[, -1]),
+                               y = gravierData_train$y,
+                               family = 'binomial',
+                               nfolds = 10,
+                               alpha = 0.5)
+
+gravier_fit_ElasticNet <- glmnet(x = as.matrix(gravierData_train[, -1]),
+                            y = gravierData_train$y,
+                            family = 'binomial',
+                            lambda = gravier_fit_ElasticNet$lambda.min,
+                            alpha = 0.5)
+
+# Get the coefficients from the ElasticNet model
+gravier_fit_ElasticNet_coef <- coef(gravier_fit_ElasticNet)
+
+# Count the number of non-zero coefficients
+gravier_fit_ElasticNet_selected_vars <- sum(gravier_fit_ElasticNet_coef != 0)
+paste("The number of selected Variables:", gravier_fit_ElasticNet_selected_vars)
+
+# Making prediction: (On train_set)
+gravier_fit_ElasticNet_pred_train <- predict(gravier_fit_ElasticNet,
+                                        as.matrix(gravierData_train[, -1]), 
+                                        type = "class") %>% factor
+# Making prediction: (On train_set)
+gravier_fit_ElasticNet_pred_train_prob <- predict(gravier_fit_ElasticNet,
+                                             as.matrix(gravierData_train[, -1]), 
+                                             type = "response")
+
+# Making prediction: (On test_set)
+gravier_fit_ElasticNet_pred_test <- predict(gravier_fit_ElasticNet,
+                                       as.matrix(gravierData_test[, -1]), 
+                                       type = "class") %>% factor
+# Making prediction: (On test_set)
+gravier_fit_ElasticNet_pred_test_prob <- predict(gravier_fit_ElasticNet,
+                                            as.matrix(gravierData_test[, -1]), 
+                                            type = "response") 
+
+# Confusion Matrix: (On train_set)
+(gravier_ElasticNet_train_confmatrix <- confusionMatrix(factor(gravierData_train[, 1]), gravier_fit_ElasticNet_pred_train))
+
+# Confusion Matrix: (On test_set)
+(gravier_ElasticNet_test_confmatrix <- confusionMatrix(factor(gravierData_test[, 1]), gravier_fit_ElasticNet_pred_test))
+
+# ROC Curve: (On train_set)
+gravier_ElasticNet_ROC_train <- roc(gravierData_train[, 1], gravier_fit_ElasticNet_pred_train_prob)
+plot.roc(gravier_ElasticNet_ROC_train, 
+         main = "ROC curve of ElasticNet model - gravierData (Train)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+
+# ROC Curve: (On test_set)
+gravier_ElasticNet_ROC_test <- roc(gravierData_test[, 1], gravier_fit_ElasticNet_pred_test_prob)
+plot.roc(gravier_ElasticNet_ROC_test, 
+         main = "ROC curve of ElasticNet model - gravierData (Test)",
+         xlab = "False Positive Rate (FPR)",
+         ylab = "True Positive Rate (TPR)",
+         print.auc = TRUE,
+         auc.polygon = TRUE,
+         print.auc.col = "#1c61b6",
+         auc.polygon.col = "lightgreen",
+         legacy.axes = TRUE)
+
+
+
+
+# Tables -------------------------------------------------------------
+
+# Model Names:
+model_names <- c("Ridge","LASSO", "Addaptive LASSO", "Elastic Net")
+model_names_persian <- c("ریج","لاسو", "لاسو تطبیقی", "شبکه ارتجاعی")
+
+# colon Evaluation Table:
+
+colon_evaluation_table <- data.frame(
+  model_names_persian,
+  
+  # No. Selected Gene:
+  no_selected_gene = c(colon_fit_ridge_selected_vars,
+                       colon_fit_lasso_selected_vars,
+                       colon_fit_Alasso_selected_vars,
+                       colon_fit_ElasticNet_selected_vars),
+  
+  ## AUC - Train
+  AUC_train = c(colon_ridge_ROC_train$auc[1],
+                colon_lasso_ROC_train$auc[1],
+                colon_Alasso_ROC_train$auc[1],
+                colon_ElasticNet_ROC_train$auc[1]),
+  
+  ## AUC - Test
+  AUC_test = c(colon_ridge_ROC_test$auc[1],
+               colon_lasso_ROC_test$auc[1],
+               colon_Alasso_ROC_test$auc[1],
+               colon_ElasticNet_ROC_test$auc[1]),
+  
+  # Misclassification Rate - Train
+  Misc_rate_train = c(1-colon_ridge_train_confmatrix$overall[1],
+                      1-colon_lasso_train_confmatrix$overall[1],
+                      1-colon_Alasso_train_confmatrix$overall[1],
+                      1-colon_ElasticNet_train_confmatrix$overall[1]),
+  
+  # Misclassification Rate - Test
+  Misc_rate_test = c(1-colon_ridge_test_confmatrix$overall[1],
+                     1-colon_lasso_test_confmatrix$overall[1],
+                     1-colon_Alasso_test_confmatrix$overall[1],
+                     1-colon_ElasticNet_test_confmatrix$overall[1])
+  
+)
+
+# singh Evaluation Table:
+singh_evaluation_table <- data.frame(
+  model_names_persian,
+  
+  # No. Selected Gene:
+  no_selected_gene = c(singh_fit_ridge_selected_vars,
+                       singh_fit_lasso_selected_vars,
+                       singh_fit_Alasso_selected_vars,
+                       singh_fit_ElasticNet_selected_vars),
+  
+  ## AUC - Train
+  AUC_train = c(singh_ridge_ROC_train$auc[1],
+                singh_lasso_ROC_train$auc[1],
+                singh_Alasso_ROC_train$auc[1],
+                singh_ElasticNet_ROC_train$auc[1]),
+  
+  ## AUC - Test
+  AUC_test = c(singh_ridge_ROC_test$auc[1],
+               singh_lasso_ROC_test$auc[1],
+               singh_Alasso_ROC_test$auc[1],
+               singh_ElasticNet_ROC_test$auc[1]),
+  
+  # Misclassification Rate - Train
+  Misc_rate_train = c(1-singh_ridge_train_confmatrix$overall[1],
+                      1-singh_lasso_train_confmatrix$overall[1],
+                      1-singh_Alasso_train_confmatrix$overall[1],
+                      1-singh_ElasticNet_train_confmatrix$overall[1]),
+  
+  # Misclassification Rate - Test
+  Misc_rate_test = c(1-singh_ridge_test_confmatrix$overall[1],
+                     1-singh_lasso_test_confmatrix$overall[1],
+                     1-singh_Alasso_test_confmatrix$overall[1],
+                     1-singh_ElasticNet_test_confmatrix$overall[1])
+  
+)
+
+# gravier Evaluation Table:
+gravier_evaluation_table <- data.frame(
+  model_names_persian,
+  
+  # No. Selected Gene:
+  no_selected_gene = c(gravier_fit_ridge_selected_vars,
+                       gravier_fit_lasso_selected_vars,
+                       gravier_fit_Alasso_selected_vars,
+                       gravier_fit_ElasticNet_selected_vars),
+  
+  ## AUC - Train
+  AUC_train = c(gravier_lasso_ROC_train$auc[1],
+                gravier_lasso_ROC_train$auc[1],
+                gravier_Alasso_ROC_train$auc[1],
+                gravier_ElasticNet_ROC_train$auc[1]),
+  
+  ## AUC - Test
+  AUC_test = c(gravier_ridge_ROC_test$auc[1],
+               gravier_lasso_ROC_test$auc[1],
+               gravier_Alasso_ROC_test$auc[1],
+               gravier_ElasticNet_ROC_test$auc[1]),
+  
+  # Misclassification Rate - Train
+  Misc_rate_train = c(1-gravier_ridge_train_confmatrix$overall[1],
+                      1-gravier_lasso_train_confmatrix$overall[1],
+                      1-gravier_Alasso_train_confmatrix$overall[1],
+                      1-gravier_ElasticNet_train_confmatrix$overall[1]),
+  
+  # Misclassification Rate - Test
+  Misc_rate_test = c(1-gravier_ridge_test_confmatrix$overall[1],
+                     1-gravier_lasso_test_confmatrix$overall[1],
+                     1-gravier_Alasso_test_confmatrix$overall[1],
+                     1-gravier_ElasticNet_test_confmatrix$overall[1])
+  
+)
+
+# Tranlating the colnames into Persian:
+colnames(colon_evaluation_table) <- c("اسم مدل", "تعداد ژن انتخاب شده", "AUC آموزشی", "AUC آزمایشی", "نرخ پیش بینی اشتباه آموزشی", "نرخ پیش بینی اشتباه آزمایشی")
+colnames(singh_evaluation_table) <- c("اسم مدل", "تعداد ژن انتخاب شده", "AUC آموزشی", "AUC آزمایشی", "نرخ پیش بینی اشتباه آموزشی", "نرخ پیش بینی اشتباه آزمایشی")
+colnames(gravier_evaluation_table) <- c("اسم مدل", "تعداد ژن انتخاب شده", "AUC آموزشی", "AUC آزمایشی", "نرخ پیش بینی اشتباه آموزشی", "نرخ پیش بینی اشتباه آزمایشی")
+
+# Latex Codes -------------------------------------------------------------
+
+# Descriptive Statistics (No. Obs, No. Var, No. Classes, Disease)
+xtable(data_str_table)
+
+# colon_evaluation_table:
+xtable(colon_evaluation_table,
+       caption = "عملکرد مدلهای رده بند بر داده های سرطان روده بزرگ",
+       label = "tab:colon_evaluation")
+
+# singh_evaluation_table:
+xtable(singh_evaluation_table,
+       caption = "عملکرد مدلهای رده بند بر داده های سرطان پرستات",
+       label = "tab:singh_evaluation")
+
+# gravier_evaluation_table:
+xtable(gravier_evaluation_table,
+       caption = "عملکرد مدلهای رده بند بر داده های سرطان پستان",
+       label = "tab:gravier_evaluation")
+
+
+
+colon_lasso_train_confmatrix$overall[3:4] %>% plot(y = c(1,1), pch = 19)
+
+
+
+
+
+
+
+
+# -------------------------------------------------------------------------
+
+ccd_logistic_corbased <- function(X, y, rho, lambda, max_iter = 1e+05, tol = 1e-7) {
+  X_scaled <- scale(X)
+  
+  n <- nrow(X_scaled)
+  p <- ncol(X_scaled)
+  
+  # Initialize coefficients, including intercept
+  beta <- rep(0, p)  # p coefficients (no intercept yet)
+  intercept <- 0     # Initialize intercept
+  
+  sigmoid <- function(z) {
+    return(1 / (1 + exp(-z)))
+  }
+  
+  penalty_gradient <- function(beta, rho) {
+    grad <- rep(0, p)
+    for (i in 1:(p-1)) {
+      for (j in (i+1):p) {
+        grad[i] <- grad[i] + 2 * ((beta[i] - beta[j]) / (1 - rho[i, j]) + 
+                                    (beta[i] + beta[j]) / (1 + rho[i, j]))
+        grad[j] <- grad[j] + 2 * ((beta[j] - beta[i]) / (1 - rho[i, j]) + 
+                                    (beta[j] + beta[i]) / (1 + rho[i, j]))
+      }
+    }
+    return(grad)
+  }
+  
+  for (iter in 1:max_iter) {
+    beta_old <- beta
+    
+    y_hat <- sigmoid(X_scaled %*% beta + intercept)
+    residual <- y - y_hat
+    intercept_update <- sum(residual) / n
+    intercept <- intercept + intercept_update
+    
+    # Update each coordinate (parameter) cyclically
+    for (j in 1:p) {
+      X_j <- X_scaled[, j]
+      y_hat <- sigmoid(X_scaled %*% beta+ intercept)
+      residual <- y - y_hat
+      
+      # Compute the gradient of the likelihood part
+      gradient <- sum(X_j * residual) / n
+      
+      # Apply custom penalty for each term
+      penalty_grad <- penalty_gradient(beta, rho)
+      update <- gradient - lambda * penalty_grad[j]
+      
+      # Stabilize the update if it's too large
+      if (abs(update) > 1e5) {
+        update <- sign(update) * 1e5
+      }
+      
+      beta[j] <- beta[j] + update
+      
+      # Check if beta[j] became NA or NaN and correct it
+      if (is.na(beta[j]) | is.nan(beta[j])) {
+        beta[j] <- beta_old[j]  # Revert to old value if the update is problematic
+        cat("Warning: NA/NaN encountered at iteration", iter, "for coefficient", j, "\n")
+      }
+    }
+    
+    # Check for convergence
+    beta_diff <- sqrt(sum((beta - beta_old)^2))
+    
+    if (is.nan(beta_diff)) {
+      cat("Warning: NA/NaN encountered in convergence check at iteration", iter, "\n")
+      break
+    }
+    
+    if (beta_diff < tol) {
+      cat("Converged in", iter, "iterations.\n")
+      break
+    }
+    
+    return(c(intercept, beta))
+  }
+}
+
+
+
+# -------------------------------------------------------------------------
+
+install.packages("C:/Users/Mahdi Rahimi/Downloads/Telegram Desktop/lqa_1.0-3.tar.gz", repos = NULL, type = "source")
+require(lqa)
+set.seed(2000)
+ind <- sample(1:nrow(gravierData), 0.7*nrow(gravierData))
+train_set <- gravierData[ind, ]
+test_set <- gravierData[-ind, ]
+
+X_train <- train_set[, 2:ncol(train_set)]
+y_train <- train_set[, 1]
+X_test <- test_set[, 2:ncol(test_set)]
+y_test <- test_set[, 1]
+
+y_train = ifelse(y_train == 'poor', 0, 1)
+cv.obj <- cv.lqa (as.vector(y_train), X_train,
+                  intercept = TRUE,
+                  lambda.candidates = list (c(0.1)),
+                  family = binomial(),
+                  penalty.family = penalreg,  
+                  n.fold = 10,
+                  loss.func = "dev.loss")
+cv.obj$lambda.opt
+
+
+# lam_opt = cv.obj1$lambda.opt
+lam_opt <- 0.1
+obj <- lqa(as.matrix(X_train), as.vector(y_train),family = binomial (), penalty = penalreg (lam_opt),  control = lqa.control ())
+beta <- obj$coef
+
+
+
+
+# DON'T RUN THESE CODES:
+
+write.csv(colonData_train,
+          "D:/Github/MScDissertationDocs/MScDissertationDocs/Data/Colon/colonTrain.csv")
+
+write.csv(colonData_test,
+          "D:/Github/MScDissertationDocs/MScDissertationDocs/Data/Colon/colonTest.csv")
+
+# write.csv(singhData_train,
+#           "D:/Github/MScDissertationDocs/MScDissertationDocs/Data/Singh/singhTrain.csv")
+# 
+# write.csv(singhData_test,
+#           "D:/Github/MScDissertationDocs/MScDissertationDocs/Data/Singh/singhTest.csv")
+# 
+# write.csv(gravierData_train,
+#           "D:/Github/MScDissertationDocs/MScDissertationDocs/Data/Gravier/gravierTrain.csv")
+# 
+# write.csv(gravierData_test,
+#           "D:/Github/MScDissertationDocs/MScDissertationDocs/Data/Gravier/gravierTest.csv")
+
+
+
+
+
+
+
+
+
+
+
+
+
+folder_path <- "D:/Github/MScDissertationDocs/MScDissertationDocs/Data/Colon"
+
+# Get a list of all CSV files in the directory
+csv_files <- list.files(path = folder_path, pattern = "*.csv", full.names = TRUE)
+csv_files <- csv_files[-c(1, 2)]
+
+# Read each CSV file and store it in a list
+data_list <- lapply(csv_files, read.csv)
+
+# Optionally, you can name each element in the list using the file names (without extensions)
+names(data_list) <- basename(csv_files)
+
+# View the structure of the list
+str(data_list)
+
+
+#### colonData -------------------------------------------------------------------
+
+# Importing the CB coefficients:
+  
+for(file in csv_files){
+  print(paste("In", file))
+  colon_fit_CB_coef <- read.csv(file)[, 2]
+  colon_fit_CB <- cv.glmnet(x = as.matrix(colonData_train[, -1]),
+                            y = colonData_train$y,
+                            family = 'binomial',
+                            nfolds = 10,
+                            alpha = 1,
+                            penalty.factor = 1/abs((colon_fit_CB_coef[-1])))
+  
+  colon_fit_CB <- glmnet(x = as.matrix(colonData_train[, -1]),
+                         y = colonData_train$y,
+                         family = 'binomial',
+                         lambda = colon_fit_CB$lambda.min,
+                         alpha = 1,
+                         penalty.factor = 1/(colon_fit_CB_coef[-1]))
+  
+  # Get the coefficients from the CB model
+  colon_fit_CB_coef <- coef(colon_fit_CB)
+  
+  # Count the number of non-zero coefficients
+  colon_fit_CB_selected_vars <- sum(colon_fit_CB_coef != 0)
+  print(paste("The number of selected Variables:", colon_fit_CB_selected_vars))
+  
+  
+  # Making prediction: (On train_set)
+  colon_fit_CB_pred_train <- predict(colon_fit_CB,
+                                     as.matrix(colonData_train[, -1]),
+                                     type = "class") %>% factor
+  # Making prediction: (On train_set)
+  colon_fit_CB_pred_train_prob <- predict(colon_fit_CB,
+                                          as.matrix(colonData_train[, -1]),
+                                          type = "response")
+
+  # Making prediction: (On test_set)
+  colon_fit_CB_pred_test <- predict(colon_fit_CB,
+                                    as.matrix(colonData_test[, -1]),
+                                    type = "class") %>% factor
+  
+  # Making prediction: (On test_set)
+  colon_fit_CB_pred_test_prob <- predict(colon_fit_CB,
+                                         as.matrix(colonData_test[, -1]),
+                                         type = "response")
+
+  # Confusion Matrix: (On train_set)
+  (colon_CB_train_confmatrix <- confusionMatrix(factor(colonData_train[, 1]), colon_fit_CB_pred_train))
+  print(paste("The Train_Set Accuracy:", colon_CB_train_confmatrix$overall[1]))
+  # Confusion Matrix: (On test_set)
+  (colon_CB_test_confmatrix <- confusionMatrix(factor(colonData_test[, 1]), colon_fit_CB_pred_test))
+  print(paste("The Train_Set Accuracy:", colon_CB_test_confmatrix$overall[1]))
+}
+
+
+
+# -------------------------------------------------------------------------
+
+
+# Initialize an empty data frame to store the results
+results <- data.frame(
+  File = character(),
+  Selected_Variables = numeric(),
+  Train_Accuracy = numeric(),
+  Test_Accuracy = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for(file in csv_files){
+  # Extract the file name for labeling
+  file_name <- basename(file)
+  
+  print(paste("In", file_name))
+  colon_fit_CB_coef <- read.csv(file)[, 2]
+  colon_fit_CB <- cv.glmnet(x = as.matrix(colonData_train[, -1]),
+                            y = colonData_train$y,
+                            family = 'binomial',
+                            nfolds = 10,
+                            alpha = 1,
+                            penalty.factor = 1/abs((colon_fit_CB_coef[-1])))
+  
+  colon_fit_CB <- glmnet(x = as.matrix(colonData_train[, -1]),
+                         y = colonData_train$y,
+                         family = 'binomial',
+                         lambda = colon_fit_CB$lambda.min,
+                         alpha = 1,
+                         penalty.factor = 1/abs((colon_fit_CB_coef[-1])))
+  
+  # Get the coefficients from the CB model
+  colon_fit_CB_coef <- coef(colon_fit_CB)
+  
+  # Count the number of non-zero coefficients
+  colon_fit_CB_selected_vars <- sum(colon_fit_CB_coef != 0)
+  print(paste("The number of selected Variables:", colon_fit_CB_selected_vars))
+  
+  # Making prediction: (On train_set)
+  colon_fit_CB_pred_train <- predict(colon_fit_CB,
+                                     as.matrix(colonData_train[, -1]),
+                                     type = "class") %>% factor
+  
+  # Making prediction: (On test_set)
+  colon_fit_CB_pred_test <- predict(colon_fit_CB,
+                                    as.matrix(colonData_test[, -1]),
+                                    type = "class") %>% factor
+  
+  # Confusion Matrix: (On train_set)
+  colon_CB_train_confmatrix <- confusionMatrix(factor(colonData_train[, 1]), colon_fit_CB_pred_train)
+  train_accuracy <- colon_CB_train_confmatrix$overall[1]
+  print(paste("The Train_Set Accuracy:", train_accuracy))
+  
+  # Confusion Matrix: (On test_set)
+  colon_CB_test_confmatrix <- confusionMatrix(factor(colonData_test[, 1]), colon_fit_CB_pred_test)
+  test_accuracy <- colon_CB_test_confmatrix$overall[1]
+  print(paste("The Test_Set Accuracy:", test_accuracy))
+  
+  # Store the results in the data frame
+  results <- rbind(results, data.frame(
+    File = file_name,
+    Selected_Variables = colon_fit_CB_selected_vars,
+    Train_Accuracy = train_accuracy,
+    Test_Accuracy = test_accuracy,
+    stringsAsFactors = FALSE
+  ))
+}
+
+# Print the results table
+print(results)
+
+
