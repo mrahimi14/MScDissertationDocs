@@ -201,7 +201,9 @@ ggplot(plot_data, aes(x = k_values, y = error_rates)) +
   geom_line(color = "blue") +
   geom_point(color = "red") +
   labs(title = "Error Rate vs. K-Fold Cross-Validation",
-       x = "K-Fold Value", y = "Error Rate")
+       x = "K-Fold Value", y = "Error Rate") + 
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  theme_minimal()
 
 
 
