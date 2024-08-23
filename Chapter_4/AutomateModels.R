@@ -230,12 +230,15 @@ automate_adaptive_lasso <- function(train_data, test_data, response_col_name, la
 }
 
 
+# ROC=Automation ----------------------------------------------------------
+
 # Custom print method for autoROC class
 print.autoROC <- function(x, ...) {
   plot.roc(x, 
            main = "ROC curve",
            xlab = "False Positive Rate (FPR)",
            ylab = "True Positive Rate (TPR)",
+           # xlim = c(-0.05, 1.05),
            print.auc = TRUE,
            auc.polygon = TRUE,
            print.auc.col = "#1c61b6",
@@ -245,11 +248,9 @@ print.autoROC <- function(x, ...) {
 
 
 
-# CBPLR -------------------------------------------------------------------
-
-automate_correlation_based_lasso <- function(train_data, test_data, response_col_name, CB_coef) {
-  
-  # Ensure response is a factor for classification
+# Elastic Net Automate ----------------------------------------------------------
+automate_elastic_net <- function(train_data, test_data, response_col_name, alpha_values = seq(0, 1, by = 0.1)) {
+  # Ensure response is a factor for classification in both training and test data
   train_data[[response_col_name]] <- factor(train_data[[response_col_name]])
   test_data[[response_col_name]] <- factor(test_data[[response_col_name]])
   
@@ -260,38 +261,38 @@ automate_correlation_based_lasso <- function(train_data, test_data, response_col
   x_test <- as.matrix(test_data[, -which(names(test_data) == response_col_name)])
   y_test <- test_data[[response_col_name]]
   
-  # Cross-validated Correlation-Based Adaptive LASSO regression
-  fit_CB_cv <- cv.glmnet(
-    x = x_train, 
-    y = y_train, 
-    family = 'binomial', 
-    nfolds = 10, 
-    alpha = 1,
-    penalty.factor = 1 / abs(CB_coef[-1])
-  )
+  # Initialize objects to store the results
+  best_alpha <- NULL
+  best_lambda <- NULL
+  best_model <- NULL
+  lowest_cv_error <- Inf
   
-  # Final Correlation-Based Adaptive LASSO regression using the best lambda
-  fit_CB <- glmnet(
-    x = x_train, 
-    y = y_train, 
-    family = 'binomial', 
-    lambda = fit_CB_cv$lambda.min, 
-    alpha = 1,
-    penalty.factor = 1 / abs(CB_coef[-1])
-  )
+  # Cross-validated Elastic Net regression over a range of alpha values
+  for (alpha in alpha_values) {
+    fit_enet_cv <- cv.glmnet(x = x_train, y = y_train, family = 'binomial', nfolds = 10, alpha = alpha)
+    
+    if (fit_enet_cv$cvm[fit_enet_cv$lambda == fit_enet_cv$lambda.min] < lowest_cv_error) {
+      best_alpha <- alpha
+      best_lambda <- fit_enet_cv$lambda.min
+      best_model <- fit_enet_cv
+      lowest_cv_error <- fit_enet_cv$cvm[fit_enet_cv$lambda == fit_enet_cv$lambda.min]
+    }
+  }
+  
+  # Final Elastic Net regression using the best alpha and lambda
+  fit_enet <- glmnet(x = x_train, y = y_train, family = 'binomial', lambda = best_lambda, alpha = best_alpha)
   
   # Get coefficients
-  fit_CB_coef <- coef(fit_CB)
-  selected_vars_count <- sum(fit_CB_coef != 0)
-  # cat("The number of selected Variables:", selected_vars_count, "\n")
+  fit_enet_coef <- coef(fit_enet)
+  selected_vars_count <- sum(fit_enet_coef != 0)
   
   # Predictions on train set
-  pred_train <- predict(fit_CB, x_train, type = "class") %>% factor
-  pred_train_prob <- predict(fit_CB, x_train, type = "response")
+  pred_train <- predict(fit_enet, x_train, type = "class") %>% factor(levels = levels(y_train))
+  pred_train_prob <- predict(fit_enet, x_train, type = "response")
   
   # Predictions on test set
-  pred_test <- predict(fit_CB, x_test, type = "class") %>% factor
-  pred_test_prob <- predict(fit_CB, x_test, type = "response")
+  pred_test <- predict(fit_enet, x_test, type = "class") %>% factor(levels = levels(y_test))
+  pred_test_prob <- predict(fit_enet, x_test, type = "response")
   
   # Confusion Matrix on train set
   train_confmatrix <- confusionMatrix(y_train, pred_train)
@@ -308,9 +309,10 @@ automate_correlation_based_lasso <- function(train_data, test_data, response_col
   
   # Save all variables in a list for easy access
   results <- list(
-    fit_CB_cv = fit_CB_cv,
-    fit_CB = fit_CB,
-    fit_CB_coef = fit_CB_coef,
+    best_alpha = best_alpha,
+    fit_enet_cv = best_model,
+    fit_enet = fit_enet,
+    fit_enet_coef = fit_enet_coef,
     selected_vars_count = selected_vars_count,
     pred_train = pred_train,
     pred_train_prob = pred_train_prob,
@@ -324,6 +326,269 @@ automate_correlation_based_lasso <- function(train_data, test_data, response_col
   
   return(results)
 }
+
+
+# CBNEW -------------------------------------------------------------------
+
+remove_highly_correlated <- function(X, threshold = 0.98) {
+  # Calculate the correlation matrix
+  corr_matrix <- cor(X)
+  
+  # Find the pairs of variables with high correlation
+  high_corr_pairs <- which(abs(corr_matrix) > threshold, arr.ind = TRUE)
+  
+  # Filter out duplicates and self-correlations
+  high_corr_pairs <- high_corr_pairs[high_corr_pairs[, 1] < high_corr_pairs[, 2], ]
+  
+  # Identify variables to remove (keep the first one in each pair)
+  variables_to_remove <- unique(high_corr_pairs[, 2])
+  
+  # Return the matrix with the remaining variables
+  return(X[, -variables_to_remove])
+}
+
+
+# Calculate W matrix from correlation matrix
+calculate_W <- function(cor_matrix) {
+  W <- matrix(0, nrow = nrow(cor_matrix), ncol = ncol(cor_matrix))
+  
+  for (i in 1:nrow(cor_matrix)) {
+    for (j in 1:ncol(cor_matrix)) {
+      if (i == j) {
+        W[i, j] <- 2 * sum(1 / (1 - cor_matrix[i, -i]^2))
+      } else {
+        W[i, j] <- -2 * cor_matrix[i, j] / (1 - cor_matrix[i, j]^2)
+      }
+    }
+  }
+  
+  return(W)
+}
+
+
+
+# Define the logistic function
+logistic <- function(z) {
+  return(1 / (1 + exp(-z)))
+}
+
+# Define the negative log-likelihood function for logistic regression
+neg_log_likelihood <- function(X, y, beta) {
+  pi <- logistic(X %*% beta)
+  return(-sum(y * log(pi) + (1 - y) * log(1 - pi)))
+}
+
+# Coordinate Descent for Logistic Regression with L2 Penalty
+coordinate_descent <- function(X, y, lambda, W, beta_init = NULL, tol = 1e-6, max_iter = 1000) {
+  p <- ncol(X)
+  if (is.null(beta_init)) {
+    beta <- rep(0, p)
+  } else {
+    beta <- beta_init
+  }
+  
+  for (iter in 1:max_iter) {
+    beta_old <- beta
+    
+    for (j in 1:p) {
+      # Compute gradient for the j-th coordinate
+      X_j <- X[, j, drop = FALSE]
+      grad <- -t(X_j) %*% (y - logistic(X %*% beta)) / length(y) + 2 * lambda * W[j, j] * beta[j]
+      
+      # Update beta_j
+      beta[j] <- beta[j] - grad / (2 * lambda * W[j, j])
+    }
+    
+    # Check convergence
+    if ((sum(abs(beta - beta_old))) < tol) {
+      cat("Converged after", iter, "iterations.\n")
+      break
+    }
+  }
+  
+  return(beta)
+}
+
+lambda <- 10
+
+
+# Automate Ridge Regression using W
+automate_ridge_regression <- function(train_data, test_data, response_col_name) {
+  # Ensure response is a factor for classification
+  train_data[[response_col_name]] <- factor(train_data[[response_col_name]])
+  test_data[[response_col_name]] <- factor(test_data[[response_col_name]])
+  
+  # Convert to matrix and separate response from predictors
+  x_train <- as.matrix(train_data[, -which(names(train_data) == response_col_name)])
+  y_train <- train_data[[response_col_name]]
+  # y_train <- ifelse(y_train == 'good', 0, 1) # RUN FOR GRAVIER DATASET
+  y_train <- as.numeric(y_train)
+  
+  x_train <- remove_highly_correlated(x_train) # REMOVING THE HIGHLY CORRELATED VARIABLES
+  
+  # Ensure x_test has the same variables as x_train
+  x_test <- as.matrix(test_data[, -which(names(test_data) == response_col_name)])
+  x_test <- x_test[, colnames(x_train), drop = FALSE]  # Keep only columns in x_train
+  
+  y_test <- test_data[[response_col_name]]
+  # y_test <- ifelse(y_test == 'good', 0, 1) # RUN FOR GRAVIER DATASET
+  
+  
+  # Calculate correlation matrix and W matrix
+  cor_matrix <- cor(x_train)
+  W <- calculate_W(cor_matrix)
+  
+  
+  # result <- coordinate_descent(x_train, y_train, lambda, W)
+  
+  y_train <- as.factor(y_train)
+  y_test <- as.factor(y_test)
+  
+  # Fit Ridge regression model with W matrix
+  fit_ridge_cv <- cv.glmnet(
+    x = x_train, 
+    y = y_train, 
+    family = 'binomial', 
+    nfolds = 10, 
+    alpha = 1,
+    penalty.factor = (diag(W))^(3)
+  )
+  
+  # Final Ridge regression using the best lambda
+  fit_ridge <- glmnet(
+    x = x_train, 
+    y = y_train, 
+    family = 'binomial', 
+    lambda = fit_ridge_cv$lambda.min, 
+    alpha = 1,
+    penalty.factor = (diag(W))^(3)
+  )
+  
+  
+  # Get coefficients
+  fit_ridge_coef <- coef(fit_ridge)
+  selected_vars_count <- sum(fit_ridge_coef != 0)
+  
+  # Predictions on train set
+  pred_train <- predict(fit_ridge, x_train, type = "class") %>% factor
+  pred_train_prob <- predict(fit_ridge, x_train, type = "response")
+  
+  # Predictions on test set
+  pred_test <- predict(fit_ridge, x_test, type = "class") %>% factor
+  pred_test_prob <- predict(fit_ridge, x_test, type = "response")
+  
+  # Confusion Matrix on train set
+  train_confmatrix <- confusionMatrix(y_train, pred_train)
+  
+  # Confusion Matrix on test set
+  test_confmatrix <- confusionMatrix(y_test, pred_test)
+  
+  # ROC Curve objects with custom class for automatic plotting
+  roc_train <- roc(y_train, as.numeric(pred_train_prob))
+  class(roc_train) <- c("autoROC", class(roc_train))
+  
+  roc_test <- roc(y_test, as.numeric(pred_test_prob))
+  class(roc_test) <- c("autoROC", class(roc_test))
+  
+  # Save all variables in a list for easy access
+  results <- list(
+    fit_ridge_cv = fit_ridge_cv,
+    fit_ridge = fit_ridge,
+    fit_ridge_coef = fit_ridge_coef,
+    selected_vars_count = selected_vars_count,
+    pred_train = pred_train,
+    pred_train_prob = pred_train_prob,
+    pred_test = pred_test,
+    pred_test_prob = pred_test_prob,
+    train_confmatrix = train_confmatrix,
+    test_confmatrix = test_confmatrix,
+    roc_train = roc_train,
+    roc_test = roc_test
+  )
+  
+  return(results)
+}
+
+
+# CBPLR -------------------------------------------------------------------
+
+# automate_correlation_based_lasso <- function(train_data, test_data, response_col_name, CB_coef) {
+#   
+#   # Ensure response is a factor for classification
+#   train_data[[response_col_name]] <- factor(train_data[[response_col_name]])
+#   test_data[[response_col_name]] <- factor(test_data[[response_col_name]])
+#   
+#   # Convert to matrix and separate response from predictors
+#   x_train <- as.matrix(train_data[, -which(names(train_data) == response_col_name)])
+#   y_train <- train_data[[response_col_name]]
+#   
+#   x_test <- as.matrix(test_data[, -which(names(test_data) == response_col_name)])
+#   y_test <- test_data[[response_col_name]]
+#   
+#   # Cross-validated Correlation-Based Adaptive LASSO regression
+#   fit_CB_cv <- cv.glmnet(
+#     x = x_train, 
+#     y = y_train, 
+#     family = 'binomial', 
+#     nfolds = 10, 
+#     alpha = 1,
+#     penalty.factor = 1 / abs(CB_coef[-1])
+#   )
+#   
+#   # Final Correlation-Based Adaptive LASSO regression using the best lambda
+#   fit_CB <- glmnet(
+#     x = x_train, 
+#     y = y_train, 
+#     family = 'binomial', 
+#     lambda = fit_CB_cv$lambda.min, 
+#     alpha = 1,
+#     penalty.factor = 1 / abs(CB_coef[-1])
+#   )
+#   
+#   # Get coefficients
+#   fit_CB_coef <- coef(fit_CB)
+#   selected_vars_count <- sum(fit_CB_coef != 0)
+#   # cat("The number of selected Variables:", selected_vars_count, "\n")
+#   
+#   # Predictions on train set
+#   pred_train <- predict(fit_CB, x_train, type = "class") %>% factor
+#   pred_train_prob <- predict(fit_CB, x_train, type = "response")
+#   
+#   # Predictions on test set
+#   pred_test <- predict(fit_CB, x_test, type = "class") %>% factor
+#   pred_test_prob <- predict(fit_CB, x_test, type = "response")
+#   
+#   # Confusion Matrix on train set
+#   train_confmatrix <- confusionMatrix(y_train, pred_train)
+#   
+#   # Confusion Matrix on test set
+#   test_confmatrix <- confusionMatrix(y_test, pred_test)
+#   
+#   # ROC Curve objects with custom class for automatic plotting
+#   roc_train <- roc(y_train, as.numeric(pred_train_prob))
+#   class(roc_train) <- c("autoROC", class(roc_train))
+#   
+#   roc_test <- roc(y_test, as.numeric(pred_test_prob))
+#   class(roc_test) <- c("autoROC", class(roc_test))
+#   
+#   # Save all variables in a list for easy access
+#   results <- list(
+#     fit_CB_cv = fit_CB_cv,
+#     fit_CB = fit_CB,
+#     fit_CB_coef = fit_CB_coef,
+#     selected_vars_count = selected_vars_count,
+#     pred_train = pred_train,
+#     pred_train_prob = pred_train_prob,
+#     pred_test = pred_test,
+#     pred_test_prob = pred_test_prob,
+#     train_confmatrix = train_confmatrix,
+#     test_confmatrix = test_confmatrix,
+#     roc_train = roc_train,
+#     roc_test = roc_test
+#   )
+#   
+#   return(results)
+# }
 
 
 # Metrics Extraction ------------------------------------------------------
@@ -418,12 +683,6 @@ average_metrics <- function(metrics_list) {
   return(list(Mean_Train_Metrics = mean_train_metrics, Mean_Test_Metrics = mean_test_metrics))
 }
 
-
-##%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-##%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-
 # Train Test Split -------------------------------------------------------------------------
 
 train_test_split_repeat <- function(input, train_rate = 0.7, num_repeats = 10, seed_start = 2000, save_dir = "data_splits") {
@@ -493,7 +752,10 @@ train_test_split_repeat <- function(input, train_rate = 0.7, num_repeats = 10, s
 # ridge_vec_Precision_train <- c()
 # ridge_vec_Recall_train <- c()
 # ridge_vec_F1_Score_train <- c()
-# ridge_vec_Selected_Vars_Count_train <- c()
+ridge_vec_Selected_Vars_Count_train <- c()
+lasso_vec_Selected_Vars_Count_train <- c()
+Alasso_vec_Selected_Vars_Count_train <- c()
+CBPLR_vec_Selected_Vars_Count_train <- c()
 # ridge_vec_AUC_train <- c()
 # 
 # 
@@ -504,21 +766,27 @@ train_test_split_repeat <- function(input, train_rate = 0.7, num_repeats = 10, s
 # ridge_vec_Recall_test <- c()
 # ridge_vec_F1_Score_test <- c()
 # ridge_vec_Selected_Vars_Count_test <- c()
+# lasso_vec_Selected_Vars_Count_test <- c()
+# Alasso_vec_Selected_Vars_Count_test <- c()
+# CBPLR_vec_Selected_Vars_Count_test <- c()
 # ridge_vec_AUC_test <- c()
 # 
-# for(i in 1:50){
+for(i in 1:10){
 #   ridge_vec_accuracy_train <- c(ridge_vec_accuracy_train, results_list[[i]]$result_ridge$train_confmatrix$overall["Accuracy"])
 #   ridge_vec_Sensitivity_train <- c(ridge_vec_Sensitivity_train, results_list[[i]]$result_ridge$train_confmatrix$byClass["Sensitivity"])
 #   ridge_vec_Specificity_train <- c(ridge_vec_Specificity_train, results_list[[i]]$result_ridge$train_confmatrix$byClass["Specificity"])
 #   ridge_vec_Precision_train <- c(ridge_vec_Precision_train, results_list[[i]]$result_ridge$train_confmatrix$byClass["Precision"])
 #   ridge_vec_Recall_train <- c(ridge_vec_Recall_train, results_list[[i]]$result_ridge$train_confmatrix$byClass["Recall"])
 #   ridge_vec_F1_Score_train <- c(ridge_vec_F1_Score_train, results_list[[i]]$result_ridge$train_confmatrix$byClass["F1"])
-#   ridge_vec_Selected_Vars_Count_train <- c(ridge_vec_Selected_Vars_Count_train, results_list[[i]]$result_ridge$selected_vars_count)
+  ridge_vec_Selected_Vars_Count_train <- c(ridge_vec_Selected_Vars_Count_train, results_list[[i]]$result_ridge$selected_vars_count)
+  lasso_vec_Selected_Vars_Count_train <- c(lasso_vec_Selected_Vars_Count_train, results_list[[i]]$result_lasso$selected_vars_count)
+  Alasso_vec_Selected_Vars_Count_train <- c(Alasso_vec_Selected_Vars_Count_train, results_list[[i]]$result_Alasso$selected_vars_count)
+  CBPLR_vec_Selected_Vars_Count_train <- c(CBPLR_vec_Selected_Vars_Count_train, results_list[[i]]$result_CBPLR$selected_vars_count)
 #   ridge_vec_AUC_train <- c(ridge_vec_AUC_train, results_list[[i]]$result_ridge$roc_train$auc)
-# }
+}
 # 
 # 
-# for(i in 1:50){
+# for(i in 1:10){
 #   ridge_vec_accuracy_test <- c(ridge_vec_accuracy_test, results_list[[i]]$result_ridge$test_confmatrix$overall["Accuracy"])
 #   ridge_vec_Sensitivity_test <- c(ridge_vec_Sensitivity_test, results_list[[i]]$result_ridge$test_confmatrix$byClass["Sensitivity"])
 #   ridge_vec_Specificity_test <- c(ridge_vec_Specificity_test, results_list[[i]]$result_ridge$test_confmatrix$byClass["Specificity"])
@@ -526,6 +794,9 @@ train_test_split_repeat <- function(input, train_rate = 0.7, num_repeats = 10, s
 #   ridge_vec_Recall_test <- c(ridge_vec_Recall_test, results_list[[i]]$result_ridge$test_confmatrix$byClass["Recall"])
 #   ridge_vec_F1_Score_test <- c(ridge_vec_F1_Score_test, results_list[[i]]$result_ridge$test_confmatrix$byClass["F1"])
 #   ridge_vec_Selected_Vars_Count_test <- c(ridge_vec_Selected_Vars_Count_test, results_list[[i]]$result_ridge$selected_vars_count)
+#   lasso_vec_Selected_Vars_Count_test <- c(lasso_vec_Selected_Vars_Count_test, results_list[[i]]$result_lasso$selected_vars_count)
+#   Alasso_vec_Selected_Vars_Count_test <- c(Alasso_vec_Selected_Vars_Count_test, results_list[[i]]$result_Alasso$selected_vars_count)
+#   CBPLR_vec_Selected_Vars_Count_test <- c(CBPLR_vec_Selected_Vars_Count_test, results_list[[i]]$result_CBPLR$selected_vars_count)
 #   ridge_vec_AUC_test <- c(ridge_vec_AUC_test, results_list[[i]]$result_ridge$roc_test$auc)
 # }
 
